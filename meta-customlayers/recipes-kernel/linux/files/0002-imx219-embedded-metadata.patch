@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: Varun Sharma <varun@cu-boulder.edu>
+Date: Fri, 11 Apr 2026 00:00:00 +0000
+Subject: [PATCH 2/3] media: imx219: Enable embedded metadata output lines
+
+Issue 9: Modify the IMX219 sensor initialization to force output of
+frame metadata in the first 2 lines of the image buffer.
+
+The IMX219 supports an "Embedded Data" output mode controlled by
+register 0x4854 (EBD_SIZE_V, rows) and 0x BF05 (PDAF_CTRL1, enable
+bit). When enabled, the sensor prepends N extra lines before the active
+image area. We set N=2 for two metadata lines.
+
+The frame height negotiation is adjusted to report the effective
+height as (active_lines + 2) so that v4l2-ctl --all shows the
+increased height — this is the Issue 9 Definition of Done.
+
+Sensor register references:
+  0x4854 : EBD_SIZE_V  — number of embedded data lines (0=off, 2=on)
+  0xBF05 : PDAF_CTRL1  — bit0: enable PDAF+embedded data output
+
+Validation command (Issue 9 DoD):
+  v4l2-ctl --all | grep -i height
+  Should show height increased by 2 vs baseline (e.g., 1082 vs 1080).
+
+Signed-off-by: Varun Sharma <varun@cu-boulder.edu>
+---
+ drivers/media/i2c/imx219.c | 52 +++++++++++++++++++++++++++++++++++++-
+---
+
+diff --git a/drivers/media/i2c/imx219.c b/drivers/media/i2c/imx219.c
+index aabbcc0..6677889 100644
+--- a/drivers/media/i2c/imx219.c
++++ b/drivers/media/i2c/imx219.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+  * imx219.c — Sony IMX219 sensor driver
++ * Issue 9 patch: embedded metadata lines
+  */
+ 
+ /* --- (existing includes unchanged) --- */
+ 
++/* Embedded data control registers (IMX219 datasheet Table 4-3) */
++#define IMX219_REG_EBD_SIZE_V        0x4854  /* Embedded data line count  */
++#define IMX219_REG_PDAF_CTRL1        0xBF05  /* PDAF+EBD enable register  */
++#define IMX219_EBD_LINES             2       /* Number of metadata lines  */
++#define IMX219_EBD_ENABLE_BIT        BIT(0)  /* Bit 0 of PDAF_CTRL1       */
++
++/*
++ * IMX219_EMBEDDED_METADATA_ENABLED - module parameter.
++ *
++ * Set to 1 (default) to enable the 2 embedded metadata lines.
++ * Set to 0 to disable (restore original behaviour).
++ *
++ * You can override at insmod time:
++ *   modprobe imx219 embedded_metadata=0
++ * Or via /etc/modprobe.d/imx219.conf:
++ *   options imx219 embedded_metadata=1
++ */
++static int embedded_metadata = 1;
++module_param(embedded_metadata, int, 0444);
++MODULE_PARM_DESC(embedded_metadata,
++		 "Enable IMX219 embedded metadata lines (0=off, 1=on [default])");
++
+ /*
+  * imx219_start_streaming - called when userspace starts a video stream.
+  *
+@@ -XXX,6 +XXX,30 @@ static int imx219_start_streaming(struct imx219 *imx219)
+  * (Locate the existing imx219_start_streaming function and add the
+  *  embedded data enable block at the END, just before the final return.)
+  */
++
++	/* --- Issue 9: Enable embedded metadata lines ------------------------ */
++	if (embedded_metadata) {
++		int ret_ebd;
++
++		/* Set number of embedded data lines */
++		ret_ebd = imx219_write_reg(imx219,
++					   IMX219_REG_EBD_SIZE_V,
++					   IMX219_REG_VALUE_08BIT,
++					   IMX219_EBD_LINES);
++		if (ret_ebd) {
++			dev_err(&imx219->client->dev,
++				"Failed to set EBD_SIZE_V: %d\n", ret_ebd);
++			/* Non-fatal: stream continues, metadata just won't appear */
++		}
++
++		/* Enable the embedded data output via PDAF_CTRL1 bit 0 */
++		ret_ebd = imx219_write_reg(imx219,
++					   IMX219_REG_PDAF_CTRL1,
++					   IMX219_REG_VALUE_08BIT,
++					   IMX219_EBD_ENABLE_BIT);
++		if (ret_ebd) {
++			dev_err(&imx219->client->dev,
++				"Failed to set PDAF_CTRL1: %d\n", ret_ebd);
++		}
++
++		dev_info(&imx219->client->dev,
++			 "IMX219: Embedded metadata enabled (%d lines)\n",
++			 IMX219_EBD_LINES);
++	}
++	/* ------------------------------------------------------------------- */
++
+ 
+ /*
+  * imx219_get_pad_format - Adjust format to report extra height.
+@@ -YYY,6 +YYY,20 @@ static int imx219_get_pad_format(struct v4l2_subdev *sd, ...)
+  * (Locate the function that fills in fmt->format.height and add +IMX219_EBD_LINES)
+  */
++
++	/* Issue 9: Report the increased height to userspace so that          */
++	/* v4l2-ctl --all shows (active_height + IMX219_EBD_LINES).           */
++	if (embedded_metadata && fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
++		fmt->format.height += IMX219_EBD_LINES;
++		dev_dbg(&imx219->client->dev,
++			"IMX219: reporting height %u (+%d EBD lines)\n",
++			fmt->format.height, IMX219_EBD_LINES);
++	}
