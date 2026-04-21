@@ -1,0 +1,68 @@
+diff --git a/drivers/media/i2c/imx219.c b/drivers/media/i2c/imx219.c
+index 91854f16c5b9..b4a8fe742624 100644
+--- a/drivers/media/i2c/imx219.c
++++ b/drivers/media/i2c/imx219.c
+@@ -29,6 +29,9 @@
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-mediabus.h>
+ 
++/* Custom control: hardware 2×2 binning toggle */
++#define IMX219_CID_BINNING  (V4L2_CID_USER_BASE + 0x1000)
++
+ /* Chip ID */
+ #define IMX219_REG_CHIP_ID		CCI_REG16(0x0000)
+ #define IMX219_CHIP_ID			0x0219
+@@ -502,6 +505,7 @@ struct imx219 {
+ 	struct v4l2_ctrl *hflip;
+ 	struct v4l2_ctrl *vblank;
+ 	struct v4l2_ctrl *hblank;
++	struct v4l2_ctrl *binning;
+ 
+ 	/* Current mode */
+ 	const struct imx219_mode *mode;
+@@ -665,6 +669,17 @@ static int imx219_set_ctrl(struct v4l2_ctrl *ctrl)
+ 		cci_write(imx219->regmap, IMX219_REG_TESTP_GREENB,
+ 			  ctrl->val, &ret);
+ 		break;
++	case IMX219_CID_BINNING:
++		if (ctrl->val) {
++			cci_write(imx219->regmap, IMX219_REG_BINNING_MODE,
++					IMX219_BINNING_2X2_NORMAL, &ret);
++			dev_info(&client->dev, "IMX219: 2x2 binning enabled\n");
++		} else {
++			cci_write(imx219->regmap, IMX219_REG_BINNING_MODE,
++					IMX219_BINNING_NONE, &ret);
++			dev_info(&client->dev, "IMX219: binning disabled\n");
++		}
++		break;
+ 	default:
+ 		dev_info(&client->dev,
+ 			 "ctrl(id:0x%x,val:0x%x) is not handled\n",
+@@ -1219,7 +1234,7 @@ static int imx219_init_controls(struct imx219 *imx219)
+ 	int i, ret;
+ 
+ 	ctrl_hdlr = &imx219->ctrl_handler;
+-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 12);
++	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 13);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1296,6 +1311,18 @@ static int imx219_init_controls(struct imx219 *imx219)
+ 		/* The "Solid color" pattern is white by default */
+ 	}
+ 
++	imx219->binning = v4l2_ctrl_new_custom(ctrl_hdlr,
++			&(const struct v4l2_ctrl_config){
++			.ops  = &imx219_ctrl_ops,
++			.id   = IMX219_CID_BINNING,
++			.name = "Hardware 2x2 Binning",
++			.type = V4L2_CTRL_TYPE_BOOLEAN,
++			.min  = 0,
++			.max  = 1,
++			.step = 1,
++			.def  = 0,
++			}, NULL);
++
+ 	if (ctrl_hdlr->error) {
+ 		ret = ctrl_hdlr->error;
+ 		dev_err(&client->dev, "%s control init failed (%d)\n",
